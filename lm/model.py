@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-from lm.dataset import SOS_TOKEN
+import numpy as np
+from lm.dataset import SOS_IDX
 
 class Encoder(nn.Module):
     def __init__(self, input_size, hidden_size, dropout):
@@ -35,8 +35,9 @@ class Attention(nn.Module):
         return context, weights
 
 class Decoder(nn.Module):
-    def __init__(self, hidden_size, output_size, dropout):
+    def __init__(self, hidden_size, output_size, dropout, tf_ratio = 0.0):
         super(Decoder, self).__init__()
+        self.tf_rate = tf_ratio
         self.embedding = nn.Embedding(output_size, hidden_size)
         self.attention = Attention(hidden_size)
         self.gru = nn.GRU(2 * hidden_size, hidden_size, batch_first=True)
@@ -45,7 +46,7 @@ class Decoder(nn.Module):
 
     def forward(self, encoder_outputs, encoder_hidden, target_tensor=None, max_length = 30):
         batch_size = encoder_outputs.size(0)
-        decoder_input = torch.empty(batch_size, 1, dtype=torch.long).fill_(ord(SOS_TOKEN)).to('cuda')
+        decoder_input = torch.empty(batch_size, 1, dtype=torch.long).fill_(SOS_IDX).to('cuda')
         decoder_hidden = encoder_hidden
         decoder_outputs = []
         attentions = []
@@ -57,7 +58,7 @@ class Decoder(nn.Module):
             decoder_outputs.append(decoder_output)
             attentions.append(attn_weights)
 
-            if target_tensor is not None and False:
+            if target_tensor is not None and np.random.rand() < self.tf_rate :
                 # Teacher forcing: Feed the target as the next input
                 decoder_input = target_tensor[:, i].unsqueeze(1) # Teacher forcing
             else:
@@ -87,16 +88,23 @@ class Decoder(nn.Module):
 class DerivativeSolver(nn.Module):
     def __init__(self, **kwargs):
         super().__init__()
+        
+        n_tokens = kwargs.get("n_tokens", 128)
+        dropout = kwargs.get("dropout", 0.0)
+        hidden_dim = kwargs.get("hidden_dim", 512)
+        tf_ratio = kwargs.get("tf_ratio", 0.0)
+        
         self.encoder = Encoder(
-            input_size = kwargs.get("input_dim", 128),
-            hidden_size = kwargs.get("encoder_hidden_dim", 512),
-            dropout = kwargs.get("encoder_dropout", 0.0)
+            input_size = n_tokens,
+            hidden_size = hidden_dim,
+            dropout = dropout
         )
         
         self.decoder = Decoder(
-            output_size = kwargs.get("output_dim", 128),
-            hidden_size = kwargs.get("decoder_hidden_dim", 512), 
-            dropout = kwargs.get("decoder_dropout", 0.0)
+            output_size = n_tokens,
+            hidden_size = hidden_dim, 
+            dropout = dropout,
+            tf_ratio = tf_ratio
         )
     
     def forward(self, x, y=None):

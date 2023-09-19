@@ -1,16 +1,76 @@
-import torch
+import torch, re, collections
 from torch.nn.utils.rnn import pad_sequence
 import pandas as pd
 from torch.utils.data import Dataset
 
+PAD_TOKEN = '&'
 PAD_IDX = 0
-SOS_TOKEN = '?'
-EOS_TOKEN = '@'
-def encode(text : str):
-    return [ord(c) for c in SOS_TOKEN + text + EOS_TOKEN]
 
-def decode(indices : list):
-    return ''.join([chr(i) for i in indices if i not in { ord(SOS_TOKEN), ord(EOS_TOKEN), PAD_IDX}])
+SOS_TOKEN = '?'
+SOS_IDX = 1
+
+EOS_TOKEN = '@'
+EOS_IDX = 2
+
+UNK_TOKEN = '%'
+UNK_IDX = 3
+
+def get_stats(vocab):
+    pairs = collections.defaultdict(int)
+    for word in vocab:
+        symbols = word.split()
+        for i in range(len(symbols)-1):
+            pairs[symbols[i], symbols[i+1]] += 1
+    return pairs
+
+def merge_vocab(pair, v_in):
+    v_out = []
+    bigram = re.escape(' '.join(pair))
+    p = re.compile(r'(?<!\S)' + bigram + r'(?!\S)')
+    for word in v_in:
+        v_out.append(p.sub(''.join(pair), word))
+    return v_out
+
+class BPETokenizer:
+    def __init__(self, corpus, n_merges=15):
+        split_words = [' '.join([*element]) for element in corpus]
+        
+        for i in range(n_merges):
+            pairs = get_stats(split_words)
+            best = max(pairs, key=pairs.get)
+            split_words = merge_vocab(best, split_words)
+            print(best)
+        
+        token_count = collections.defaultdict(int)
+        for word in split_words:
+            tokens = word.split()
+            for token in tokens:
+                token_count[token] += 1
+        
+        self.token_count = token_count
+        
+        self.token_idx = {PAD_TOKEN: PAD_IDX, SOS_TOKEN : SOS_IDX, EOS_TOKEN : EOS_IDX, UNK_TOKEN : UNK_IDX}
+        for idx, token in enumerate(self.token_count.keys(), len(self.token_idx)):
+            self.token_idx[token] = idx
+        
+        self.idx_token = {idx : token for token, idx in self.token_idx.items()}
+    
+    def __len__(self):
+        return len(self.token_idx)
+    
+    def encode(self, word):
+        formatted_word = f'{SOS_TOKEN}{word}{EOS_TOKEN}'
+        split_word = ' '.join([*formatted_word])
+        for key in sorted(self.token_count.keys(), key=len, reverse=True):
+            if len(key) > 1:
+                split_token = ' '.join([*key])
+                split_word = split_word.replace(f' {split_token} ', f' {key} ')
+
+        tokens = [self.token_idx[token] for token in split_word.split()]
+        return tokens
+
+    def decode(self, indices):
+        return ''.join([self.idx_token[idx] for idx in indices if idx not in {PAD_IDX, SOS_IDX, EOS_IDX}])
 
 def batch_collator(batch):
     inputs = []
@@ -24,12 +84,13 @@ def batch_collator(batch):
     return inputs, targets
     
 class DerivativeDataset(Dataset):
-    def __init__(self, source_df : pd.DataFrame):
+    def __init__(self, source_df : pd.DataFrame, tokenizer : BPETokenizer):
         self.data = source_df.to_numpy()
-
+        self.tokenizer = tokenizer
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
         x,y = self.data[idx]
-        return encode(x), encode(y)
+        
+        return self.tokenizer.encode(x), self.tokenizer.encode(y)
