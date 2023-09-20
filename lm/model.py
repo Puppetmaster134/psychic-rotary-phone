@@ -113,4 +113,29 @@ class DerivativeSolver(nn.Module):
         max_size = y.size(-1) if y is not None else 32
         decoder_outputs, decoder_hidden, attn = self.decoder(encoder_outputs, encoder_hidden, y, max_length=max_size)
         return decoder_outputs, decoder_hidden, attn
+
+class TestCity(nn.Module):
+    def __init__(self, **kwargs):
+        super().__init__()
+        n_tokens = kwargs.get("n_tokens", 128)
+        dropout = kwargs.get("dropout", 0.0)
+        hidden_dim = kwargs.get("hidden_dim", 512)
+        tf_ratio = kwargs.get("tf_ratio", 0.0)
         
+        emb_dim = 128
+        hidden_dim = 64
+        self.mlp = nn.Sequential(
+            nn.Embedding(n_tokens, emb_dim),
+            nn.ReLU(),
+            nn.Linear(emb_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, n_tokens),
+            nn.LogSoftmax(dim=-1)
+        )
+
+    
+    def forward(self, x, y=None):
+        preds = self.mlp(x)
+
+        return preds, None, None
+                

@@ -1,3 +1,4 @@
+import pickle, os
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader
@@ -13,16 +14,30 @@ from tqdm import tqdm
 from lm.dataset import BPETokenizer
 
 DATA_DIR = './data/'
+MODEL_DIR = 'saved_models/'
 DEVICE = 'cuda'
-LEARNING_RATE = 2e-3
+LEARNING_RATE = 1e-3
 BATCH_SIZE = 128
 
+def load_tokenizer(token_elements):
+    filename = MODEL_DIR + "tokenizer.pt"
+    
+    if os.path.isfile(filename):
+        with open(filename,'rb') as f:
+            tokenizer : BPETokenizer = pickle.load(f)
+    else:
+        tokenizer = BPETokenizer(token_elements,n_merges=1)
+        with open(filename, 'wb') as f:
+            pickle.dump(tokenizer, f)
+    
+    return tokenizer
+    
 def load_datasets():
-    train_set = pd.read_json(DATA_DIR + "train.json").head(20000)
-    test_set = pd.read_json(DATA_DIR + "test.json").head(500)    
+    train_set = pd.read_json(DATA_DIR + "train.json")
+    test_set = pd.read_json(DATA_DIR + "test.json")    
     token_elements = train_set['x'].tolist() + train_set['y'].tolist()
-
-    tokenizer = BPETokenizer(token_elements)
+    tokenizer = load_tokenizer(token_elements)
+    
     return DerivativeDataset(train_set, tokenizer), DerivativeDataset(test_set, tokenizer)
 
 def train(model : DerivativeSolver, dataset : DerivativeDataset, optimizer):
@@ -34,9 +49,9 @@ def train(model : DerivativeSolver, dataset : DerivativeDataset, optimizer):
         optimizer.zero_grad()
         source = source.to(DEVICE)
         target = target.to(DEVICE)
-
-        outputs,_,_ = model(source, target)
         
+        outputs,_,_ = model(source, target)
+
         loss = obj(outputs.view(-1, outputs.size(-1)),target.view(-1))
         loss.backward()
         optimizer.step()
@@ -63,7 +78,6 @@ def test(model, dataset):
             target = target.to(DEVICE)
             outputs,_,_ = model(source)
             
-            t = outputs.size()
             _,indexes = torch.topk(outputs,1,dim=-1)
             results = indexes.squeeze(-1)
             
@@ -81,18 +95,21 @@ def test(model, dataset):
     
     return np.mean(scores)   
 
+def save_model(model):
+    torch.save(model.state_dict(), MODEL_DIR + 'best.pt')
+    
 train_set, test_set = load_datasets()
 n_tokens = len(train_set.tokenizer.idx_token)
 
 model = DerivativeSolver(
     n_tokens=n_tokens,
     hidden_dim = 256,
-    dropout = 0.0,
-    tf_ratio = 0.2
+    dropout = 0.25,
+    tf_ratio = 0.25
 ).to(DEVICE)
 
-NUM_EPOCHS = 10
-
+NUM_EPOCHS = 5
+best = 0
 for i in range(NUM_EPOCHS):
     # Train
     optimizer = Adam(model.parameters(), lr=LEARNING_RATE)
@@ -104,3 +121,8 @@ for i in range(NUM_EPOCHS):
     # Test
     accuracy = test(model, test_set)
     print(f'Epoch {i} accuracy', accuracy)
+    
+    if accuracy > best:
+        best = accuracy
+        print('New best accuracy. Saving.')
+        save_model(model)
