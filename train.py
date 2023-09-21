@@ -15,12 +15,14 @@ from lm.dataset import BPETokenizer
 
 from lm.numodel import DerivativeDecoder
 
+from lm.tmp import Transformer
+
 DATA_DIR = './data/'
 MODEL_DIR = 'saved_models/'
 DEVICE = 'cuda'
-LEARNING_RATE = 5e-5
-LEARNING_DECAY = 0.95
-BATCH_SIZE = 32
+LEARNING_RATE = 5e-3
+LEARNING_DECAY = 0.99
+BATCH_SIZE = 128
 NUM_EPOCHS = 5
 
 def load_tokenizer(token_elements):
@@ -37,38 +39,22 @@ def load_tokenizer(token_elements):
     return tokenizer
     
 def load_datasets():
-    train_set = pd.read_json(DATA_DIR + "train.json")
+    train_set = pd.read_json(DATA_DIR + "train.json").head(5000)
     test_set = pd.read_json(DATA_DIR + "test.json")
     token_elements = train_set['x'].tolist() + train_set['y'].tolist()
     tokenizer = load_tokenizer(token_elements)
     
     return DerivativeDataset(train_set, tokenizer), DerivativeDataset(test_set, tokenizer)
-# def train(model : DerivativeSolver, dataset : DerivativeDataset, optimizer):
-#     obj = NLLLoss(ignore_index=PAD_IDX)
-#     dataloader = DataLoader(dataset, batch_size = BATCH_SIZE, collate_fn=batch_collator)
-    
-#     total_loss = 0
-#     for idx, (source, target, truth, enc_mask, dec_mask) in enumerate(tqdm(dataloader,total=len(dataloader))):
-#         optimizer.zero_grad()
-#         source = source.to(DEVICE)
-#         target = target.to(DEVICE)
-#         truth = truth.to(DEVICE)
-#         enc_mask = enc_mask.to(DEVICE)
-#         dec_mask = dec_mask.to(DEVICE)
 
-#         # outputs,_,_ = model(source, target, enc_mask, dec_mask)
-#         outputs,_,_ = model(source, target)
-        
-#         loss = obj(outputs.view(-1, outputs.size(-1)),truth.view(-1))
-#         loss.backward()
-#         optimizer.step()
-#         total_loss += loss.item()
-        
-#         if idx % 250 == 249:
-#             tqdm.write(f'Loss {idx} -- {total_loss / idx}')
-#     epoch_avg_loss = total_loss / len(dataloader)
-#     return epoch_avg_loss
 
+
+
+
+
+
+
+
+#GPT2 Trainer
 def train(model : DerivativeDecoder, dataset : DerivativeDataset, optimizer):
     obj = NLLLoss(ignore_index = PAD_IDX)
     dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, collate_fn=batch_collator)
@@ -81,6 +67,8 @@ def train(model : DerivativeDecoder, dataset : DerivativeDataset, optimizer):
         out = model(input = input, labels = target, attention_mask = mask)
         
         loss = out.loss
+        
+        optimizer.zero_grad()
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
@@ -89,13 +77,13 @@ def train(model : DerivativeDecoder, dataset : DerivativeDataset, optimizer):
             tqdm.write(f'Loss {idx} -- {total_loss / idx}')
             
     epoch_avg_loss = total_loss / len(dataloader)
-    return epoch_avg_loss
-        
-    
-
+    return epoch_avg_loss   
+#Tester
 def test(model, dataset : DerivativeDataset):
     scores = []
-    for row in tqdm(dataset, total=len(dataset)):
+    sample_idx = np.random.default_rng().choice(len(dataset),size=200, replace=False)
+    for idx in tqdm(sample_idx):
+        row = dataset[idx]
         input = torch.LongTensor(row['pred_ctx']).unsqueeze(0).to(DEVICE)
         preds = model.predict(input,SOS_IDX).flatten().cpu().numpy()
         truth = row['truth']
@@ -108,24 +96,65 @@ def test(model, dataset : DerivativeDataset):
 
 def save_model(model):
     torch.save(model.state_dict(), MODEL_DIR + 'best.pt')
+
+
+
+def train_loop(model,dataset, opt):
+    """
+    Method from "A detailed guide to Pytorch's nn.Transformer() module.", by
+    Daniel Melchor: https://medium.com/@danielmelchor/a-detailed-guide-to-pytorchs-nn-transformer-module-c80afbc9ffb1
+    """
     
+    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, collate_fn=batch_collator)
+    loss_fn = torch.nn.CrossEntropyLoss()
+    model.train()
+    total_loss = 0
+    
+    for batch in dataloader:
+        X, y, _,_,_ = batch
+        
+        X = X.to(DEVICE)
+        y = y.to(DEVICE)
+        
+        # Now we shift the tgt by one so with the <SOS> we predict the token at pos 1
+        y_input = y[:,:-1]
+        y_expected = y[:,1:]
+        
+        # Get mask to mask out the next words
+        sequence_length = y_input.size(1)
+        tgt_mask = model.get_tgt_mask(sequence_length).to(DEVICE)
+
+        # Standard training except we pass in y_input and tgt_mask
+        pred = model(X, y_input, tgt_mask)
+
+        # Permute pred to have batch size first again
+        pred = pred.permute(1, 2, 0)      
+        loss = loss_fn(pred, y_expected)
+
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+    
+        total_loss += loss.detach().item()
+        
+    return total_loss / len(dataloader)
+
+
 train_set, test_set = load_datasets()
 n_tokens = len(train_set.tokenizer.idx_token)
 
-# model = DerivativeSolver(
-#     n_tokens=n_tokens,
-#     hidden_dim = 256,
-#     dropout = 0.25,
-#     tf_ratio = 0.25
-# ).to(DEVICE)
 
-from lm.numodel import DerivativeDecoder
+
+
+# model = Transformer(
+#     num_tokens=n_tokens, dim_model=8, num_heads=2, num_encoder_layers=3, num_decoder_layers=3, dropout_p=0.1
+# ).to(DEVICE)
+# opt = torch.optim.SGD(model.parameters(), lr=0.01)
+
 model = DerivativeDecoder(
     n_tokens = n_tokens
 ).to(DEVICE)
 
-
-# model = TestCity(n_tokens=n_tokens).to(DEVICE)
 total_params = sum(p.numel() for p in model.parameters())
 print(f"Parameter Count: {total_params}")
 
@@ -140,11 +169,11 @@ for i in range(NUM_EPOCHS):
     print(f'Epoch {i} loss', loss)
     scheduler.step()
     
-    # Test
-    accuracy = test(model, test_set)
-    print(f'Epoch {i} accuracy', accuracy)
-    
-    if accuracy >= best:
-        best = accuracy
-        print('New best accuracy. Saving.')
-        save_model(model)
+# Test
+accuracy = test(model, test_set)
+print(f'Accuracy', accuracy)
+
+if accuracy >= best:
+    best = accuracy
+    print('New best accuracy. Saving.')
+    save_model(model)

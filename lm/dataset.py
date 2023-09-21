@@ -93,6 +93,7 @@ class DerivativeDataset(Dataset):
         
         source = f'{SOS_TOKEN}{x}{SEP_TOKEN}{y}'
         target = f'{x}{SEP_TOKEN}{y}{EOS_TOKEN}'
+        
         pred_ctx = f'{SOS_TOKEN}{x}{SEP_TOKEN}'
         
         source = self.tokenizer.encode(source)
