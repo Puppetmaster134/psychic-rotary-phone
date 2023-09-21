@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import numpy as np
 from lm.dataset import SOS_IDX
 
+DEVICE = 'cuda'
 class Encoder(nn.Module):
     def __init__(self, input_size, hidden_size, dropout):
         super(Encoder, self).__init__()
@@ -46,7 +47,7 @@ class Decoder(nn.Module):
 
     def forward(self, encoder_outputs, encoder_hidden, target_tensor=None, max_length = 30):
         batch_size = encoder_outputs.size(0)
-        decoder_input = torch.empty(batch_size, 1, dtype=torch.long).fill_(SOS_IDX).to('cuda')
+        decoder_input = torch.empty(batch_size, 1, dtype=torch.long).fill_(SOS_IDX).to(DEVICE)
         decoder_hidden = encoder_hidden
         decoder_outputs = []
         attentions = []
@@ -122,20 +123,56 @@ class TestCity(nn.Module):
         hidden_dim = kwargs.get("hidden_dim", 512)
         tf_ratio = kwargs.get("tf_ratio", 0.0)
         
-        emb_dim = 128
-        hidden_dim = 64
-        self.mlp = nn.Sequential(
-            nn.Embedding(n_tokens, emb_dim),
-            nn.ReLU(),
-            nn.Linear(emb_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, n_tokens),
-            nn.LogSoftmax(dim=-1)
+        emb_dim = 16
+        ff_dim = 64
+        self.encoder_embed = nn.Embedding(n_tokens, emb_dim)
+        self.decoder_embed = nn.Embedding(n_tokens, emb_dim)
+        self.t = nn.Transformer(
+            d_model = emb_dim,
+            nhead = 1,
+            num_encoder_layers=2,
+            num_decoder_layers=2,
+            dim_feedforward=ff_dim,
+            batch_first=True
         )
-
+        
+        self.lm_head = nn.Sequential(
+            nn.Linear(emb_dim,n_tokens),
+            nn.Softmax(dim=-1)
+        )
     
-    def forward(self, x, y=None):
-        preds = self.mlp(x)
+    def forward(self, x, y, enc_mask, dec_mask):
+        x_emb = self.encoder_embed(x)
+        y_emb = self.decoder_embed(y)
+        
+        # print(dec_mask)
+        out = self.t(x_emb, y_emb, src_mask=enc_mask, tgt_mask = dec_mask)
+        
+        preds = self.lm_head(out)
+        return preds,None,None
+    
+    def predict(self, x, enc_mask, n_tokens=32):
+        with torch.no_grad():
+            batch_size = x.size(0)
+            y = torch.empty(batch_size, 1, dtype=torch.long).fill_(SOS_IDX).to(DEVICE)
+            x_emb = self.encoder_embed(x)
+            
+            for i in range(n_tokens-1):
+                y_emb = self.decoder_embed(y)
+                dec_mask = torch.zeros((batch_size, y.size(-1), y.size(-1))).to(DEVICE)
+                out = self.t(x_emb, y_emb, src_mask=enc_mask, tgt_mask=dec_mask)
+                pred = self.lm_head(out)
+                idx = torch.argmax(pred, dim=-1)
+                sos_tokens = torch.empty(batch_size, 1, dtype=torch.long).fill_(SOS_IDX).to(DEVICE)
+                y = torch.concat([sos_tokens,idx], dim=-1)
 
-        return preds, None, None
-                
+            return y
+
+        
+        # for i in range(31):
+        #     self.transformer(y)
+        
+        # # # while decoder_input.
+        # # # print(decoder_input.size())
+        # # exit()
+        # # pass
